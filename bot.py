@@ -178,6 +178,18 @@ def search_lectures(keyword: str, limit: int = 20):
     return rows  # list of (id, subject, material_type, title)
 
 
+def update_lecture_field(lecture_id: int, field: str, value: str) -> bool:
+    column = "material_type" if field == "type" else field
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.execute(
+        f"UPDATE lectures SET {column} = ? WHERE id = ?", (value.strip(), lecture_id)
+    )
+    conn.commit()
+    updated = cur.rowcount > 0
+    conn.close()
+    return updated
+
+
 def delete_lecture(lecture_id: int) -> bool:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute("DELETE FROM lectures WHERE id = ?", (lecture_id,))
@@ -224,6 +236,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\nYou're an admin. Extra commands:\n"
             "/list — see every lecture with its ID and download count\n"
             "/popular — see your top 10 most downloaded lectures\n"
+            "/edit [id] [subject|type|title] [new value] — fix a lecture's details\n"
             "/delete [id] — remove a lecture\n\n"
             "To upload a lecture, send me a PDF with a caption "
             "formatted like:\n<code>Paediatric | Slides | Lecture 3 - Growth</code>\n\n"
@@ -439,6 +452,41 @@ async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your Telegram user ID is: {update.effective_user.id}")
 
 
+async def edit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    args = context.args
+    valid_fields = ("subject", "type", "title")
+    if len(args) < 3 or not args[0].isdigit() or args[1].lower() not in valid_fields:
+        await update.message.reply_text(
+            "Usage: /edit [id] [subject|type|title] [new value]\n"
+            "Example: /edit 5 title Lecture 2 - Updated Growth Chart\n\n"
+            "Use /list or /search to find a lecture's ID."
+        )
+        return
+
+    lecture_id = int(args[0])
+    field = args[1].lower()
+    new_value = " ".join(args[2:]).strip()
+    if not new_value:
+        await update.message.reply_text("The new value can't be empty.")
+        return
+
+    row = get_lecture(lecture_id)
+    if not row:
+        await update.message.reply_text("No lecture with that ID.")
+        return
+
+    subject, mtype, title, _file_id = row
+    old_value = {"subject": subject, "type": mtype, "title": title}[field]
+
+    update_lecture_field(lecture_id, field, new_value)
+    await update.message.reply_text(
+        f"Updated lecture #{lecture_id}.\n"
+        f"{field.capitalize()}: \"{old_value}\" → \"{new_value}\""
+    )
+
+
 async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -473,6 +521,7 @@ def main():
     app.add_handler(CommandHandler("latest", latest_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("popular", popular_cmd))
+    app.add_handler(CommandHandler("edit", edit_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, nav_handler))
