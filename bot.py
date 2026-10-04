@@ -1,3 +1,5 @@
+
+Bot v2 · PY
 """
 Academy Lecture Bot
 --------------------
@@ -7,18 +9,18 @@ Academy Lecture Bot
   and get the PDF sent back.
 - Metadata (subject, type, title, file_id) is stored in a local SQLite database.
   The PDF bytes themselves stay on Telegram's servers; we only remember the file_id.
-
+ 
 Setup:
   1. pip install -r requirements.txt
   2. Copy .env.example to .env and fill in BOT_TOKEN and ADMIN_IDS
   3. python bot.py
 """
-
+ 
 import os
 import sqlite3
 import logging
 from dotenv import load_dotenv
-
+ 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -29,32 +31,37 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
+ 
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
-
+ 
 load_dotenv()
-
+ 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
 DB_PATH = os.getenv("DB_PATH", "lectures.db")
-
+ 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
-
+ 
+ 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-
-
+ 
+ 
+def chunk_buttons(buttons, per_row: int = 2):
+    """Arrange a flat list of InlineKeyboardButtons into rows of `per_row`."""
+    return [buttons[i:i + per_row] for i in range(0, len(buttons), per_row)]
+ 
+ 
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
-
+ 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
@@ -70,10 +77,14 @@ def init_db():
         )
         """
     )
+    # Migration: add download_count to databases created before this feature existed.
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(lectures)").fetchall()}
+    if "download_count" not in existing_columns:
+        conn.execute("ALTER TABLE lectures ADD COLUMN download_count INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
-
-
+ 
+ 
 def add_lecture(subject: str, material_type: str, title: str, file_id: str, uploaded_by: int):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
@@ -82,15 +93,15 @@ def add_lecture(subject: str, material_type: str, title: str, file_id: str, uplo
     )
     conn.commit()
     conn.close()
-
-
+ 
+ 
 def get_subjects():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("SELECT DISTINCT subject FROM lectures ORDER BY subject").fetchall()
     conn.close()
     return [r[0] for r in rows]
-
-
+ 
+ 
 def get_types_for_subject(subject: str):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
@@ -99,8 +110,8 @@ def get_types_for_subject(subject: str):
     ).fetchall()
     conn.close()
     return [r[0] for r in rows]
-
-
+ 
+ 
 def get_lectures_for_subject_type(subject: str, material_type: str):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
@@ -108,18 +119,38 @@ def get_lectures_for_subject_type(subject: str, material_type: str):
         (subject, material_type),
     ).fetchall()
     conn.close()
-    return rows
-
-
+    return rows  # list of (id, title)
+ 
+ 
 def get_lecture(lecture_id: int):
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
         "SELECT subject, material_type, title, file_id FROM lectures WHERE id = ?", (lecture_id,)
     ).fetchone()
     conn.close()
-    return row
-
-
+    return row  # (subject, material_type, title, file_id) or None
+ 
+ 
+def increment_download_count(lecture_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE lectures SET download_count = download_count + 1 WHERE id = ?", (lecture_id,)
+    )
+    conn.commit()
+    conn.close()
+ 
+ 
+def get_most_downloaded(limit: int = 10):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        """SELECT id, subject, material_type, title, download_count FROM lectures
+           ORDER BY download_count DESC, id LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return rows  # list of (id, subject, material_type, title, download_count)
+ 
+ 
 def search_lectures(keyword: str, limit: int = 20):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
@@ -128,9 +159,9 @@ def search_lectures(keyword: str, limit: int = 20):
         (f"%{keyword}%", f"%{keyword}%", f"%{keyword}%", limit),
     ).fetchall()
     conn.close()
-    return rows
-
-
+    return rows  # list of (id, subject, material_type, title)
+ 
+ 
 def delete_lecture(lecture_id: int) -> bool:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute("DELETE FROM lectures WHERE id = ?", (lecture_id,))
@@ -138,17 +169,18 @@ def delete_lecture(lecture_id: int) -> bool:
     deleted = cur.rowcount > 0
     conn.close()
     return deleted
-
-
+ 
+ 
 def get_all_lectures():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT id, subject, material_type, title FROM lectures ORDER BY subject, material_type, id"
+        """SELECT id, subject, material_type, title, download_count FROM lectures
+           ORDER BY subject, material_type, id"""
     ).fetchall()
     conn.close()
-    return rows
-
-
+    return rows  # list of (id, subject, material_type, title, download_count)
+ 
+ 
 def get_latest_lectures(limit: int = 5):
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
@@ -156,13 +188,13 @@ def get_latest_lectures(limit: int = 5):
         (limit,),
     ).fetchall()
     conn.close()
-    return rows
-
-
+    return rows  # list of (id, subject, material_type, title)
+ 
+ 
 # ---------------------------------------------------------------------------
 # Student-facing handlers
 # ---------------------------------------------------------------------------
-
+ 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Welcome! 📚\n\n"
@@ -173,7 +205,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(update.effective_user.id):
         text += (
             "\nYou're an admin. Extra commands:\n"
-            "/list — see every lecture with its ID\n"
+            "/list — see every lecture with its ID and download count\n"
+            "/popular — see your top 10 most downloaded lectures\n"
             "/delete [id] — remove a lecture\n\n"
             "To upload a lecture, send me a PDF with a caption "
             "formatted like:\n<code>Paediatric | Slides | Lecture 3 - Growth</code>\n\n"
@@ -181,22 +214,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "there's no need to wait between uploads."
         )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-
+ 
+ 
 async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = get_latest_lectures(5)
     if not rows:
         await update.message.reply_text("No lectures uploaded yet.")
         return
-    keyboard = [
-        [InlineKeyboardButton(f"{subject} - {mtype} - {title}", callback_data=f"lec:{lid}")]
+    buttons = [
+        InlineKeyboardButton(f"{subject} - {mtype} - {title}", callback_data=f"lec:{lid}")
         for lid, subject, mtype, title in rows
     ]
     await update.message.reply_text(
-        "🆕 Most recently added:", reply_markup=InlineKeyboardMarkup(keyboard)
+        "🆕 Most recently added:", reply_markup=InlineKeyboardMarkup(chunk_buttons(buttons))
     )
-
-
+ 
+ 
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -204,7 +237,11 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rows:
         await update.message.reply_text("No lectures uploaded yet.")
         return
-    lines = [f"#{lid} — {subject} — {mtype} — {title}" for lid, subject, mtype, title in rows]
+    lines = [
+        f"#{lid} — {subject} — {mtype} — {title} ({count} downloads)"
+        for lid, subject, mtype, title, count in rows
+    ]
+    # Telegram messages max out around 4096 characters; chunk if the list is long.
     chunk = []
     length = 0
     for line in lines:
@@ -216,22 +253,22 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         length += len(line) + 1
     if chunk:
         await update.message.reply_text("\n".join(chunk))
-
-
+ 
+ 
 async def subjects_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subjects = get_subjects()
     if not subjects:
         await update.message.reply_text("No lectures uploaded yet.")
         return
-    keyboard = [
-        [InlineKeyboardButton(subject, callback_data=f"subj:{subject}")]
+    buttons = [
+        InlineKeyboardButton(subject, callback_data=f"subj:{subject}")
         for subject in subjects
     ]
     await update.message.reply_text(
-        "Choose a subject:", reply_markup=InlineKeyboardMarkup(keyboard)
+        "Choose a subject:", reply_markup=InlineKeyboardMarkup(chunk_buttons(buttons))
     )
-
-
+ 
+ 
 async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /search [keyword]")
@@ -241,50 +278,52 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not results:
         await update.message.reply_text("No matching lectures found.")
         return
-    keyboard = [
-        [InlineKeyboardButton(f"{subject} - {mtype} - {title}", callback_data=f"lec:{lid}")]
+    buttons = [
+        InlineKeyboardButton(f"{subject} - {mtype} - {title}", callback_data=f"lec:{lid}")
         for lid, subject, mtype, title in results
     ]
     await update.message.reply_text(
-        f"Results for '{keyword}':", reply_markup=InlineKeyboardMarkup(keyboard)
+        f"Results for '{keyword}':", reply_markup=InlineKeyboardMarkup(chunk_buttons(buttons))
     )
-
-
+ 
+ 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-
+ 
     if data.startswith("subj:"):
         subject = data[len("subj:"):]
         types = get_types_for_subject(subject)
         if not types:
             await query.edit_message_text("No materials found for this subject.")
             return
-        keyboard = [
-            [InlineKeyboardButton(mtype, callback_data=f"type:{subject}|{mtype}")]
+        buttons = [
+            InlineKeyboardButton(mtype, callback_data=f"type:{subject}|{mtype}")
             for mtype in types
         ]
+        keyboard = chunk_buttons(buttons)
         keyboard.append([InlineKeyboardButton("Back to subjects", callback_data="back:subjects")])
         await query.edit_message_text(
             f"{subject} — choose a type:", reply_markup=InlineKeyboardMarkup(keyboard)
         )
-
+ 
     elif data.startswith("type:"):
         subject, mtype = data[len("type:"):].split("|", 1)
         lectures = get_lectures_for_subject_type(subject, mtype)
         if not lectures:
             await query.edit_message_text("No lectures found here.")
             return
-        keyboard = [
-            [InlineKeyboardButton(title, callback_data=f"lec:{lid}")]
+        buttons = [
+            InlineKeyboardButton(title, callback_data=f"lec:{lid}")
             for lid, title in lectures
         ]
+        keyboard = chunk_buttons(buttons)
         keyboard.append([InlineKeyboardButton("Back", callback_data=f"subj:{subject}")])
         await query.edit_message_text(
             f"{subject} — {mtype} — choose a lecture:", reply_markup=InlineKeyboardMarkup(keyboard)
         )
-
+ 
     elif data.startswith("lec:"):
         lecture_id = int(data[len("lec:"):])
         row = get_lecture(lecture_id)
@@ -296,22 +335,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=query.message.chat_id,
             document=file_id,
         )
-
+        increment_download_count(lecture_id)
+ 
     elif data == "back:subjects":
         subjects = get_subjects()
-        keyboard = [
-            [InlineKeyboardButton(subject, callback_data=f"subj:{subject}")]
+        buttons = [
+            InlineKeyboardButton(subject, callback_data=f"subj:{subject}")
             for subject in subjects
         ]
         await query.edit_message_text(
-            "Choose a subject:", reply_markup=InlineKeyboardMarkup(keyboard)
+            "Choose a subject:", reply_markup=InlineKeyboardMarkup(chunk_buttons(buttons))
         )
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # Admin-facing handlers
 # ---------------------------------------------------------------------------
-
+ 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
@@ -319,12 +359,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Sorry, only academy admins can upload lectures."
         )
         return
-
+ 
     doc = update.message.document
     if doc.mime_type != "application/pdf":
         await update.message.reply_text("Please send a PDF file.")
         return
-
+ 
     caption = update.message.caption
     if not caption or caption.count("|") != 2:
         await update.message.reply_text(
@@ -333,14 +373,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Resend the PDF with that caption."
         )
         return
-
+ 
     subject, mtype, title = caption.split("|", 2)
     add_lecture(subject, mtype, title, doc.file_id, user_id)
     await update.message.reply_text(
         f"Saved!\nSubject: {subject.strip()}\nType: {mtype.strip()}\nTitle: {title.strip()}"
     )
-
-
+ 
+ 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -352,24 +392,38 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Deleted lecture #{lecture_id}.")
     else:
         await update.message.reply_text("No lecture with that ID.")
-
-
+ 
+ 
 async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Your Telegram user ID is: {update.effective_user.id}")
-
-
+ 
+ 
+async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    rows = get_most_downloaded(10)
+    if not rows:
+        await update.message.reply_text("No lectures uploaded yet.")
+        return
+    lines = [
+        f"#{lid} — {subject} — {mtype} — {title}: {count} downloads"
+        for lid, subject, mtype, title, count in rows
+    ]
+    await update.message.reply_text("📊 Most downloaded:\n" + "\n".join(lines))
+ 
+ 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-
+ 
 def main():
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
-
+ 
     init_db()
-
+ 
     app = Application.builder().token(BOT_TOKEN).build()
-
+ 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("subjects", subjects_cmd))
     app.add_handler(CommandHandler("search", search_cmd))
@@ -377,12 +431,14 @@ def main():
     app.add_handler(CommandHandler("myid", myid_cmd))
     app.add_handler(CommandHandler("latest", latest_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
+    app.add_handler(CommandHandler("popular", popular_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_document))
-
+ 
     logger.info("Bot starting...")
     app.run_polling()
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
+ 
