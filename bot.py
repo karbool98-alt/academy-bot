@@ -1,5 +1,3 @@
-
-Bot v2 · PY
 """
 Academy Lecture Bot
 --------------------
