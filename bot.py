@@ -35,6 +35,7 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ContextTypes,
+    TypeHandler,
     filters,
 )
 
@@ -105,6 +106,15 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_seen TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     # Migration: add columns to databases created before these features existed.
     existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(lectures)").fetchall()}
     if "download_count" not in existing_columns:
@@ -113,6 +123,35 @@ def init_db():
         conn.execute("ALTER TABLE lectures ADD COLUMN chapter TEXT NOT NULL DEFAULT 'General'")
     conn.commit()
     conn.close()
+
+
+def record_user(user_id: int):
+    """Remember a student the first time we see them, and update when we last saw them."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.execute("UPDATE users SET last_seen = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_stats():
+    conn = sqlite3.connect(DB_PATH)
+
+    def one(sql: str) -> int:
+        return conn.execute(sql).fetchone()[0]
+
+    stats = {
+        "total_users": one("SELECT COUNT(*) FROM users"),
+        "new_today": one("SELECT COUNT(*) FROM users WHERE first_seen >= datetime('now', '-1 day')"),
+        "new_week": one("SELECT COUNT(*) FROM users WHERE first_seen >= datetime('now', '-7 days')"),
+        "active_today": one("SELECT COUNT(*) FROM users WHERE last_seen >= datetime('now', '-1 day')"),
+        "active_week": one("SELECT COUNT(*) FROM users WHERE last_seen >= datetime('now', '-7 days')"),
+        "lectures": one("SELECT COUNT(*) FROM lectures"),
+        "downloads": one("SELECT COALESCE(SUM(download_count), 0) FROM lectures"),
+        "favorites": one("SELECT COUNT(*) FROM favorites"),
+    }
+    conn.close()
+    return stats
 
 
 def add_favorite(user_id: int, lecture_id: int):
@@ -318,6 +357,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\nYou're an admin. Extra commands:\n"
             "/list — see every lecture with its ID and download count\n"
             "/popular — see your top 10 most downloaded lectures\n"
+            "/stats — see how many students use the bot\n"
             "/edit [id] [subject|chapter|type|title] [new value] — fix a lecture's details\n"
             "/delete [id] — remove a lecture\n\n"
             "To upload a lecture, send me a PDF with a caption "
@@ -483,7 +523,7 @@ async def favorites_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     buttons = [
-        InlineKeyboardButton(f"{subject} - {mtype} - {title}", callback_data=f"lec:{lid}")
+        InlineKeyboardButton(title, callback_data=f"lec:{lid}")
         for lid, subject, mtype, title in rows
     ]
     await update.message.reply_text(
@@ -674,6 +714,34 @@ async def renamechapter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No lectures found with that subject and chapter.")
 
 
+async def track_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Runs on every update before the other handlers; records students (not admins)."""
+    user = update.effective_user
+    if user and not user.is_bot and not is_admin(user.id):
+        try:
+            record_user(user.id)
+        except Exception:
+            logger.exception("Could not record user")
+
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    s = get_stats()
+    await update.message.reply_text(
+        "📈 Bot statistics\n\n"
+        f"👥 Students who used the bot: {s['total_users']}\n"
+        f"🆕 New in the last 24 hours: {s['new_today']}\n"
+        f"🆕 New in the last 7 days: {s['new_week']}\n"
+        f"🟢 Active in the last 24 hours: {s['active_today']}\n"
+        f"🟢 Active in the last 7 days: {s['active_week']}\n\n"
+        f"📚 Lectures: {s['lectures']}\n"
+        f"⬇️ Total downloads: {s['downloads']}\n"
+        f"⭐ Total favorites saved: {s['favorites']}\n\n"
+        "Admins are not counted. Counting started when this feature was deployed."
+    )
+
+
 async def popular_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -719,6 +787,8 @@ def main():
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("popular", popular_cmd))
     app.add_handler(CommandHandler("edit", edit_cmd))
+    app.add_handler(TypeHandler(Update, track_user_handler), group=-1)
+    app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("favorites", favorites_cmd))
     app.add_handler(CommandHandler("renamechapter", renamechapter_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
