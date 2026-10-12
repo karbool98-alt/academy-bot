@@ -345,13 +345,29 @@ def get_latest_lectures(limit: int = 5):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "Welcome! 📚\n\n"
-        "/subjects — browse lectures by subject (opens a button menu; "
-        "tap 🏠 Close menu when you're done)\n"
-        "/latest — see the most recently added lectures\n"
-        "/search [keyword] — find a lecture by name\n"
-        "/favorites — your saved lectures (tap ⭐ under any lecture to save it)\n"
-    )
+“👋 أهلاً بيك ببوت منصة +A الطبية! 🩺💙\n”
+“\n”
+“هذا البوت يساعدك توصل للمحاضرات بسهولة، وتتابع كل جديد بمكتبتك الدراسية 📚\n”
+“\n”
+“🔹 /subjects — تصفّح المحاضرات حسب المادة.\n”
+“🔹 /latest — شوف أحدث المحاضرات المضافة.\n”
+“🔹 /search [keyword] — ابحث عن محاضرة باسمها أو بكلمة من عنوانها.\n”
+“🔹 /favorites — ارجع لمحاضراتك المفضّلة بأي وقت ⭐\n”
+“\n”
+“💡 شلون تستخدم البوت؟\n”
+“• اختار المادة من الأزرار حتى تظهر محاضراتها.\n”
+“• من تكمّل، اضغط 🏠 حتى تغلق القائمة.\n”
+“• لحفظ أي محاضرة والرجوع إلها لاحقاً، اضغط ⭐ تحت المحاضرة.\n”
+“\n”
+“📢 حتى ما يفوتك أي جديد!\n”
+“انضم لقناتنا الرسمية حتى تتابع آخر الأخبار والتحديثات الخاصة بمنصة +A الطبية 👇\n”
+“\n”
+“🔗 https://t.me/Aplus_medical_academy\n”
+“\n”
+“نتمنالك رحلة دراسية موفّقة ومليانة إنجازات! 🎓💙\n”
+“\n”
+“+A Medical Academy | Beyond the Average.”
+)
     if is_admin(update.effective_user.id):
         text += (
             "\nYou're an admin. Extra commands:\n"
