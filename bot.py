@@ -16,6 +16,7 @@ Setup:
 """
 
 import os
+import time
 import sqlite3
 import logging
 from dotenv import load_dotenv
@@ -31,6 +32,7 @@ from telegram import (
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
@@ -48,6 +50,14 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
 DB_PATH = os.getenv("DB_PATH", "lectures.db")
+
+# Students must be subscribed to this channel to use the bot.
+# Set REQUIRED_CHANNEL to "off" on Railway to turn the check off.
+REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL", "@Aplus_medical_academy").strip()
+CHANNEL_ENABLED = REQUIRED_CHANNEL.lower() not in ("", "off", "none")
+CHANNEL_URL = os.getenv("REQUIRED_CHANNEL_URL") or f"https://t.me/{REQUIRED_CHANNEL.lstrip('@')}"
+_sub_cache = {}  # user_id -> time of last successful check
+SUB_CACHE_SECONDS = 120
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -730,6 +740,78 @@ async def renamechapter_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No lectures found with that subject and chapter.")
 
 
+async def is_subscribed(bot, user_id: int) -> bool:
+    """True if the user is in the required channel. If Telegram can't tell us
+    (for example the bot is not an admin of the channel), we let the user through
+    and log the problem, so a setup mistake never locks every student out."""
+    now = time.monotonic()
+    last_ok = _sub_cache.get(user_id)
+    if last_ok is not None and now - last_ok < SUB_CACHE_SECONDS:
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+    except Exception:
+        logger.exception("Could not check channel membership; letting the user through")
+        return True
+    status = member.status
+    ok = status in ("member", "administrator", "creator") or (
+        status == "restricted" and getattr(member, "is_member", False)
+    )
+    if ok:
+        _sub_cache[user_id] = now
+    else:
+        _sub_cache.pop(user_id, None)
+    return ok
+
+
+async def subscription_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Runs before every other handler. Students who are not in the channel only
+    see the 'please subscribe' message. Admins are never blocked."""
+    if not CHANNEL_ENABLED:
+        return
+    user = update.effective_user
+    if not user or user.is_bot or is_admin(user.id):
+        return
+
+    message = update.message
+    if message and message.text and message.text.split()[0].split("@")[0] == "/myid":
+        return  # needed so a new admin can find their ID
+
+    query = update.callback_query
+
+    if query and query.data == "check_sub":
+        if await is_subscribed(context.bot, user.id):
+            await query.answer("✅ تم التحقق، أهلاً بيك!")
+            await query.message.reply_text(
+                "✅ تم التحقق من اشتراكك بالقناة.\nاكتب /start أو /subjects حتى تبدأ 📚"
+            )
+        else:
+            await query.answer("❌ ما اشتركت بالقناة بعد. اشترك أولاً ثم اضغط تحقق.", show_alert=True)
+        raise ApplicationHandlerStop
+
+    if await is_subscribed(context.bot, user.id):
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📢 اشترك بالقناة", url=CHANNEL_URL)],
+            [InlineKeyboardButton("✅ اشتركت، تحقق", callback_data="check_sub")],
+        ]
+    )
+    text = (
+        "🔒 حتى تستخدم البوت لازم تشترك بقناتنا الرسمية أولاً.\n\n"
+        "1️⃣ اضغط «اشترك بالقناة»\n"
+        "2️⃣ ارجع هنا واضغط «اشتركت، تحقق»"
+    )
+    if query:
+        await query.answer("اشترك بالقناة أولاً 🔒", show_alert=True)
+        await query.message.reply_text(text, reply_markup=keyboard)
+        raise ApplicationHandlerStop
+    if message:
+        await message.reply_text(text, reply_markup=keyboard)
+        raise ApplicationHandlerStop
+
+
 async def track_user_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Runs on every update before the other handlers; records students (not admins)."""
     user = update.effective_user
@@ -803,7 +885,8 @@ def main():
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("popular", popular_cmd))
     app.add_handler(CommandHandler("edit", edit_cmd))
-    app.add_handler(TypeHandler(Update, track_user_handler), group=-1)
+    app.add_handler(TypeHandler(Update, track_user_handler), group=-3)
+    app.add_handler(TypeHandler(Update, subscription_gate), group=-2)
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("favorites", favorites_cmd))
     app.add_handler(CommandHandler("renamechapter", renamechapter_cmd))
