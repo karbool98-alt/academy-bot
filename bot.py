@@ -783,10 +783,15 @@ async def subscription_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await is_subscribed(context.bot, user.id):
             await query.answer("✅ تم التحقق، أهلاً بيك!")
             await query.message.reply_text(
-                "✅ تم التحقق من اشتراكك بالقناة.\nاكتب /start أو /subjects حتى تبدأ 📚"
+                "✅ تم التحقق من اشتراكك، شكراً لك 💙\n"
+                "تقدر هسه تبدأ باستخدام البوت، اكتب /start أو /subjects 📚"
             )
         else:
-            await query.answer("❌ ما اشتركت بالقناة بعد. اشترك أولاً ثم اضغط تحقق.", show_alert=True)
+            await query.answer(
+                "ما بان اشتراكك بالقناة لحد الآن 🤍\n"
+                "نرجو الاشتراك أولاً، وبعدها اضغط «تم الاشتراك».",
+                show_alert=True,
+            )
         raise ApplicationHandlerStop
 
     if await is_subscribed(context.bot, user.id):
@@ -794,17 +799,20 @@ async def subscription_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📢 اشترك بالقناة", url=CHANNEL_URL)],
-            [InlineKeyboardButton("✅ اشتركت، تحقق", callback_data="check_sub")],
+            [InlineKeyboardButton("📢 القناة الرسمية", url=CHANNEL_URL)],
+            [InlineKeyboardButton("✅ تم الاشتراك", callback_data="check_sub")],
         ]
     )
     text = (
-        "🔒 حتى تستخدم البوت لازم تشترك بقناتنا الرسمية أولاً.\n\n"
-        "1️⃣ اضغط «اشترك بالقناة»\n"
-        "2️⃣ ارجع هنا واضغط «اشتركت، تحقق»"
+        "أهلاً بيك 👋💙\n\n"
+        "حتى تقدر تستفيد من البوت، نرجو منك الاشتراك بقناتنا الرسمية أولاً. "
+        "بالقناة تلاقي آخر الأخبار والتحديثات الخاصة بمنصة +A الطبية 🩺\n\n"
+        "🔹 اضغط على «القناة الرسمية» وانضم لنا\n"
+        "🔹 بعدها ارجع واضغط «تم الاشتراك»\n\n"
+        "شكراً لوجودك معنا 🤍"
     )
     if query:
-        await query.answer("اشترك بالقناة أولاً 🔒", show_alert=True)
+        await query.answer("نرجو الاشتراك بالقناة أولاً حتى تكمل 🤍", show_alert=True)
         await query.message.reply_text(text, reply_markup=keyboard)
         raise ApplicationHandlerStop
     if message:
